@@ -15,18 +15,38 @@ import re
 import os
 import tempfile
 import urllib.parse
+import base64
 from datetime import datetime, timezone, timedelta
 
 PORT = int(os.environ.get("PORT", 8787))
 
 COURTS = [
-    {"id": 190670, "name": "Court 1", "num": 1},
-    {"id": 190671, "name": "Court 2", "num": 2},
-    {"id": 190672, "name": "Court 3", "num": 3},
-    {"id": 190673, "name": "Court 4", "num": 4},
-    {"id": 190674, "name": "Court 5", "num": 5},
-    {"id": 190675, "name": "Court 6", "num": 6},
+    {"id": 190670, "park": "Midway", "name": "Court 1", "num": 1},
+    {"id": 190671, "park": "Midway", "name": "Court 2", "num": 2},
+    {"id": 190672, "park": "Midway", "name": "Court 3", "num": 3},
+    {"id": 190673, "park": "Midway", "name": "Court 4", "num": 4},
+    {"id": 190674, "park": "Midway", "name": "Court 5", "num": 5},
+    {"id": 190675, "park": "Midway", "name": "Court 6", "num": 6},
+    
+    {"id": 190662, "park": "Fowler", "name": "Court 1", "num": 1},
+    {"id": 190663, "park": "Fowler", "name": "Court 2", "num": 2},
+    {"id": 190664, "park": "Fowler", "name": "Court 3", "num": 3},
+    {"id": 190665, "park": "Fowler", "name": "Court 4", "num": 4},
+    {"id": 190666, "park": "Fowler", "name": "Court 5", "num": 5},
+    {"id": 190667, "park": "Fowler", "name": "Court 6", "num": 6},
+    {"id": 190668, "park": "Fowler", "name": "Court 7", "num": 7},
+    {"id": 190669, "park": "Fowler", "name": "Court 8", "num": 8},
 ]
+
+for c in COURTS:
+    # URL to view the calendar directly
+    c["calendar_url"] = f"https://secure.rec1.com/GA/forsyth-county-ga/{c['park']}-Park-Pickleball-Court-{c['num']}/{c['id']}fcal"
+    
+    # URL to the catalog with a search filter for this specific court
+    search_term = f"search={c['park']} Park Pickleball Court {c['num']}"
+    b64_filter = base64.b64encode(search_term.encode('utf-8')).decode('utf-8')
+    c["reserve_url"] = f"https://secure.rec1.com/GA/forsyth-county-ga/catalog?filter={b64_filter}"
+
 
 BASE_URL = "https://secure.rec1.com/GA/forsyth-county-ga"
 API_URL = f"{BASE_URL}/cal_ajax.php?request=publicCalendar"
@@ -116,24 +136,34 @@ def get_courts_for_date(target_date_str: str = None) -> dict:
         raw_events = fetch_events_for_range(start_ts, end_ts, csrf_key, csrf_token) or []
 
     # Map events to individual courts
-    court_events = {c["num"]: [] for c in COURTS}
+    court_events = {c["id"]: [] for c in COURTS}
     for ev in raw_events:
-        m = re.search(r"Pickleball Court (\d+)", ev.get("title", ""))
-        c_num = int(m.group(1)) if m else None
-        if c_num in court_events:
-            court_events[c_num].append(ev)
+        m = re.search(r"Pickleball Court (\d+)\s*\(([^)]+) Park\)", ev.get("title", ""))
+        if m:
+            c_num = int(m.group(1))
+            park_name = m.group(2).strip()
+            matched_id = None
+            for c in COURTS:
+                if c["num"] == c_num and c["park"].lower() == park_name.lower():
+                    matched_id = c["id"]
+                    break
+            if matched_id in court_events:
+                court_events[matched_id].append(ev)
 
     is_today = (target_dt.date() == now_real.date())
 
     courts_data = []
     for court in COURTS:
-        c_num = court["num"]
         courts_data.append({
             "id": court["id"],
+            "park": court["park"],
             "name": court["name"],
-            "courtNum": c_num,
-            "events": court_events[c_num],
+            "courtNum": court["num"],
+            "reserve_url": court["reserve_url"],
+            "calendar_url": court["calendar_url"],
+            "events": court_events[court["id"]],
         })
+
 
     return {
         "view": "day",
@@ -169,15 +199,22 @@ def get_month_data(year: int, month: int) -> dict:
     # Bucket events by date (YYYY-MM-DD) and court
     day_map = {}
     for ev in raw_events:
-        # Start string format: "2026-09-13 18:30:00"
         date_key = ev["start"].split(" ")[0]
         if date_key not in day_map:
-            day_map[date_key] = {c["num"]: [] for c in COURTS}
+            day_map[date_key] = {c["id"]: [] for c in COURTS}
 
-        m = re.search(r"Pickleball Court (\d+)", ev.get("title", ""))
-        c_num = int(m.group(1)) if m else None
-        if c_num and c_num in day_map[date_key]:
-            day_map[date_key][c_num].append(ev)
+        m = re.search(r"Pickleball Court (\d+)\s*\(([^)]+) Park\)", ev.get("title", ""))
+        if m:
+            c_num = int(m.group(1))
+            park_name = m.group(2).strip()
+            matched_id = None
+            for c in COURTS:
+                if c["num"] == c_num and c["park"].lower() == park_name.lower():
+                    matched_id = c["id"]
+                    break
+            if matched_id and matched_id in day_map[date_key]:
+                day_map[date_key][matched_id].append(ev)
+
 
     return {
         "view": "month",
@@ -364,6 +401,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .court-header.open { background: var(--green); }
   .court-header.partial { background: var(--yellow); color: #78350f; }
   .court-header.full { background: var(--red); }
+  a[target="_blank"]:active { opacity: 0.7; transform: scale(0.95); }
   .court-status-badge {
     font-size: 11px;
     font-weight: 700;
@@ -548,10 +586,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
   <div style="font-size: 12px; color: var(--muted)">Courts 1 through 6</div>
 
+
   <div class="view-toggle">
     <button class="toggle-btn active" id="btnDayView" onclick="switchView('day')">📅 Day View</button>
     <button class="toggle-btn" id="btnMonthView" onclick="switchView('month')">🗓️ Month View</button>
   </div>
+  <div class="view-toggle" style="margin-top: -6px; margin-bottom: 14px;">
+    <button class="toggle-btn active" id="btnMidway" onclick="switchPark('Midway')">🌳 Midway Park</button>
+    <button class="toggle-btn" id="btnFowler" onclick="switchPark('Fowler')">🌲 Fowler Park</button>
+  </div>
+
 </div>
 
 <div class="nav-bar">
@@ -574,8 +618,25 @@ HTML_PAGE = r"""<!DOCTYPE html>
 const DAY_START = 6, DAY_END = 22;
 
 let currentView = 'day'; // 'day' | 'month'
+let selectedPark = 'Midway'; // 'Midway' | 'Fowler'
 let selectedDate = new Date(); // Current date object in EDT
+let cachedDayData = null;
 let cachedMonthData = null;
+
+function switchPark(park) {
+  selectedPark = park;
+  document.getElementById('btnMidway').classList.toggle('active', park === 'Midway');
+  document.getElementById('btnFowler').classList.toggle('active', park === 'Fowler');
+  
+  if (currentView === 'day' && cachedDayData) {
+    renderDayView(cachedDayData);
+  } else if (currentView === 'month' && cachedMonthData) {
+    renderMonthView(cachedMonthData);
+  } else {
+    loadData();
+  }
+}
+
 
 function pad(n) { return String(n).padStart(2, '0'); }
 
@@ -592,7 +653,7 @@ function fmtTime(iso) {
 
 function cleanTitle(raw) {
   let t = raw.replace(/\\n/g, ' ').replace(/\n/g, ' ').trim();
-  t = t.replace(/Pickleball Court \d+ \(Midway Park\)\s*/g, '');
+  t = t.replace(/Pickleball Court \d+ \([^)]+ Park\)\s*/g, '');
   t = t.replace(/\d{1,2}:\d{2}\s*(AM|PM)\s*-\s*\d{1,2}:\d{2}\s*(AM|PM)/gi, '');
   t = t.replace(/Rental\s*/g, '').trim();
   return t || 'Reserved';
@@ -632,14 +693,14 @@ function loadData() {
     const ymd = dateToYMD(selectedDate);
     fetch(`/api/courts?date=${ymd}&t=${Date.now()}`)
       .then(r => r.json())
-      .then(renderDayView)
+      .then(d => { cachedDayData = d; renderDayView(d); })
       .catch(showError);
   } else {
     const y = selectedDate.getFullYear();
     const m = selectedDate.getMonth() + 1;
     fetch(`/api/month?year=${y}&month=${m}&t=${Date.now()}`)
       .then(r => r.json())
-      .then(renderMonthView)
+      .then(d => { cachedMonthData = d; renderMonthView(d); })
       .catch(showError);
   }
 }
@@ -653,8 +714,10 @@ function renderDayView(data) {
     todayInd.innerHTML = `<button class="quick-today-btn" onclick="jumpToToday()" style="padding:1px 8px;font-size:10px;margin-top:2px;">Back to Today</button>`;
   }
 
+  const parkCourts = data.courts.filter(c => c.park === selectedPark);
+
   let openC = 0, partC = 0, fullC = 0;
-  data.courts.forEach(c => {
+  parkCourts.forEach(c => {
     if (!c.events.length) { openC++; return; }
     const mins = c.events.reduce((s,e) => {
       const ds = new Date(e.start.replace(' ','T')), de = new Date(e.end.replace(' ','T'));
@@ -676,7 +739,7 @@ function renderDayView(data) {
   }
 
   h += `<div class="courts-grid">`;
-  data.courts.forEach(court => {
+  parkCourts.forEach(court => {
     const has = court.events.length > 0;
     let st = 'open', sl = '✅ OPEN ALL DAY';
     if (has) {
@@ -692,7 +755,10 @@ function renderDayView(data) {
       <div class="court-card">
         <div class="court-header ${st}">
           <span>${court.name}</span>
-          <span class="court-status-badge">${sl}</span>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <a href="${court.reserve_url}" target="_blank" style="font-size:11px; background:rgba(0,0,0,0.3); color:white; padding:3px 8px; border-radius:8px; text-decoration:none; font-weight:700;">RESERVE</a>
+            <a href="${court.calendar_url}" target="_blank" class="court-status-badge" style="text-decoration:none; display:inline-block; color:inherit;">${sl}</a>
+          </div>
         </div>
         <div class="court-body">
           <div class="timeline">
@@ -736,7 +802,6 @@ function renderDayView(data) {
 
   document.getElementById('contentArea').innerHTML = h;
 }
-
 function renderMonthView(data) {
   document.getElementById('navLabel').textContent = data.monthName;
   const isCurrentMonth = (new Date().getFullYear() === data.year && (new Date().getMonth() + 1) === data.month);
@@ -749,11 +814,15 @@ function renderMonthView(data) {
 
   const firstDay = new Date(data.year, data.month - 1, 1).getDay(); // 0 = Sun
   const totalDays = new Date(data.year, data.month, 0).getDate();
+  
+  const parkIds = selectedPark === 'Midway' 
+    ? [190670,190671,190672,190673,190674,190675] 
+    : [190662,190663,190664,190665,190666,190667,190668,190669];
 
   let h = `
     <div class="month-container">
       <div style="font-size:12px;color:var(--muted);text-align:center;margin-bottom:10px;">
-        Tap any day to see full court hours and reservations. Shows Courts 1–6 (🟢 Open / 🔴 Booked).
+        Tap any day to see full court hours and reservations. Shows Courts 1–${parkIds.length} (🟢 Open / 🔴 Booked).
       </div>
       <div class="cal-weekdays">
         <div>SUN</div><div>MON</div><div>TUE</div><div>WED</div><div>THU</div><div>FRI</div><div>SAT</div>
@@ -777,11 +846,11 @@ function renderMonthView(data) {
         <div class="court-dots-row">
     `;
 
-    for (let c = 1; c <= 6; c++) {
-      const cEvts = dayData[c] || [];
+    for (let c = 0; c < parkIds.length; c++) {
+      const cEvts = dayData[parkIds[c]] || [];
       const hasBooking = cEvts.length > 0;
       const statusClass = hasBooking ? 'booked' : 'open';
-      h += `<div class="c-dot-badge ${statusClass}">C${c}</div>`;
+      h += `<div class="c-dot-badge ${statusClass}">C${c+1}</div>`;
     }
 
     h += `
@@ -793,7 +862,6 @@ function renderMonthView(data) {
   h += `</div></div>`;
   document.getElementById('contentArea').innerHTML = h;
 }
-
 function selectDateFromMonth(ymd) {
   const parts = ymd.split('-');
   selectedDate = new Date(parts[0], parts[1] - 1, parts[2]);
